@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     chunk_max_size: int = 800
     chunk_overlap: int = 100
 
+    # 对话上下文管理（超过阈值后摘要压缩，保留近几轮原文）
+    context_enabled: bool = True
+    context_max_tokens: int = 24000
+    context_keep_messages: int = 8
+
     # MCP 服务配置
     mcp_cls_transport: str = "streamable-http"
     mcp_cls_url: str = "http://localhost:8003/mcp"

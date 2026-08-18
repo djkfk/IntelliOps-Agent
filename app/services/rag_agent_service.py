@@ -5,24 +5,26 @@
 """
 
 import asyncio
-from typing import Annotated, Any, AsyncGenerator, Dict, Sequence
+from typing import Any, AsyncGenerator, Dict
 
 from langchain.agents import create_agent
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
-    BaseMessage,
     HumanMessage,
-    RemoveMessage,
     SystemMessage,
-    ToolMessage,
 )
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
-from loguru import logger
-from typing_extensions import TypedDict
 from langchain_qwq import ChatQwen
+from langgraph.checkpoint.memory import MemorySaver
+from loguru import logger
 
+from app.agent.context_manager import (
+    build_context_middleware,
+    build_context_snapshot,
+    get_context_usage,
+    reset_context_usage,
+)
+from app.agent.mcp_client import get_mcp_client_with_retry
 from app.config import config
 from app.tools import get_current_time, retrieve_knowledge
 from app.tools.knowledge_tool import (
@@ -30,56 +32,10 @@ from app.tools.knowledge_tool import (
     get_last_rag_result,
     get_rag_phase,
 )
-from app.agent.mcp_client import get_mcp_client_with_retry
 
 # 阿里千问大模型和langchain集成参考： https://docs.langchain.com/oss/python/integrations/chat/qwen
 # 注意：需要配置环境变量 DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1 否则默认访问的是新加坡站点
 # 同时也需要配置环境变量 DASHSCOPE_API_KEY=your_api_key
-
-
-class AgentState(TypedDict):
-    """Agent 状态"""
-    messages: Annotated[Sequence[BaseMessage], add_messages]
-
-
-def trim_messages_middleware(state: AgentState) -> dict[str, Any] | None:
-    """
-    修剪消息历史，只保留最近的几条消息以适应上下文窗口
-
-    策略：
-    - 保留第一条系统消息（System Message）
-    - 保留最近的 6 条消息（3 轮对话）
-    - 当消息少于等于 7 条时，不做修剪
-
-    Args:
-        state: Agent 状态
-
-    Returns:
-        包含修剪后消息的字典，如果无需修剪则返回 None
-    """
-    messages = state["messages"]
-
-    # 如果消息数量较少，无需修剪
-    if len(messages) <= 7:
-        return None
-
-    # 提取第一条系统消息
-    first_msg = messages[0]
-
-    # 保留最近的 6 条消息（确保包含完整的对话轮次）
-    recent_messages = messages[-6:] if len(messages) % 2 == 0 else messages[-7:]
-
-    # 构建新的消息列表
-    new_messages = [first_msg] + list(recent_messages)
-
-    logger.debug(f"修剪消息历史: {len(messages)} -> {len(new_messages)} 条")
-
-    return {
-        "messages": [
-            RemoveMessage(id=REMOVE_ALL_MESSAGES),
-            *new_messages
-        ]
-    }
 
 
 class RagAgentService:
@@ -136,9 +92,16 @@ class RagAgentService:
         # 合并所有工具
         all_tools = self.tools + self.mcp_tools
 
+        middleware = []
+        context_middleware = build_context_middleware()
+        if context_middleware is not None:
+            middleware.append(context_middleware)
+
         self.agent = create_agent(
             self.model,
             tools=all_tools,
+            system_prompt=self.system_prompt,
+            middleware=middleware,
             checkpointer=self.checkpointer,
         )
 
@@ -148,6 +111,35 @@ class RagAgentService:
         if all_tools:
             tool_names = [tool.name if hasattr(tool, "name") else str(tool) for tool in all_tools]
             logger.info(f"可用工具列表: {', '.join(tool_names)}")
+
+    def _load_checkpoint_messages(self, session_id: str) -> list:
+        """从 checkpointer 读取当前会话消息。"""
+        try:
+            thread_config = {"configurable": {"thread_id": session_id}}
+            checkpoint_tuple = self.checkpointer.get(thread_config)
+            if not checkpoint_tuple:
+                return []
+            if hasattr(checkpoint_tuple, "checkpoint"):
+                checkpoint_data = checkpoint_tuple.checkpoint  # type: ignore[union-attr]
+            else:
+                checkpoint_data = checkpoint_tuple[0] if checkpoint_tuple else {}
+            return checkpoint_data.get("channel_values", {}).get("messages", []) or []
+        except Exception as exc:
+            logger.debug(f"读取会话消息失败: {session_id}, {exc}")
+            return []
+
+    def _resolve_context_snapshot(self, session_id: str, extra_messages: list | None = None) -> dict:
+        """按检查点估算当前占用；若本轮发生过压缩则带上压缩标记。"""
+        messages = list(self._load_checkpoint_messages(session_id))
+        if extra_messages:
+            messages.extend(extra_messages)
+        snapshot = build_context_snapshot(messages)
+        recorded = get_context_usage()
+        if recorded and recorded.get("compressed"):
+            snapshot["compressed"] = True
+            if recorded.get("tokens_before") is not None:
+                snapshot["tokens_before"] = recorded["tokens_before"]
+        return snapshot
 
     def _build_system_prompt(self) -> str:
         """
@@ -197,14 +189,12 @@ class RagAgentService:
         try:
             await self._initialize_agent()
             clear_last_rag_result()
+            reset_context_usage()
 
             logger.info(f"[会话 {session_id}] RAG Agent 收到查询（非流式）: {question}")
 
-            # 构建消息列表（系统提示 + 用户问题）
-            messages = [
-                SystemMessage(content=self.system_prompt),
-                HumanMessage(content=question)
-            ]
+            # 系统提示由 create_agent(system_prompt=...) 注入，此处只追加本轮用户问题
+            messages = [HumanMessage(content=question)]
 
             # 构建 Agent 输入
             agent_input = {"messages": messages}
@@ -238,7 +228,11 @@ class RagAgentService:
                 logger.warning(f"[会话 {session_id}] Agent 返回结果为空")
 
             rag_meta = get_last_rag_result()
-            return {"answer": answer, "rag": rag_meta}
+            return {
+                "answer": answer,
+                "rag": rag_meta,
+                "context": self._resolve_context_snapshot(session_id),
+            }
 
         except Exception as e:
             logger.error(f"[会话 {session_id}] RAG Agent 查询失败（非流式）: {e}")
@@ -258,6 +252,7 @@ class RagAgentService:
         try:
             await self._initialize_agent()
             clear_last_rag_result()
+            reset_context_usage()
 
             logger.info(f"[会话 {session_id}] RAG Agent 收到查询（流式）: {question}")
 
@@ -266,11 +261,15 @@ class RagAgentService:
                 "type": "status",
                 "data": {"stage": "thinking", "message": "思考中…"},
             }
+            yield {
+                "type": "context",
+                "data": build_context_snapshot(
+                    list(self._load_checkpoint_messages(session_id))
+                    + [HumanMessage(content=question)]
+                ),
+            }
 
-            messages = [
-                SystemMessage(content=self.system_prompt),
-                HumanMessage(content=question),
-            ]
+            messages = [HumanMessage(content=question)]
             agent_input = {"messages": messages}
             config_dict = {"configurable": {"thread_id": session_id}}
 
@@ -438,9 +437,11 @@ class RagAgentService:
                     }
 
             logger.info(f"[会话 {session_id}] RAG Agent 查询完成（流式）")
+            context_data = self._resolve_context_snapshot(session_id)
+            yield {"type": "context", "data": context_data}
             yield {
                 "type": "complete",
-                "data": {"rag": get_last_rag_result()},
+                "data": {"rag": get_last_rag_result(), "context": context_data},
             }
 
         except Exception as e:
@@ -462,32 +463,18 @@ class RagAgentService:
             list: 消息历史列表 [{"role": "user|assistant", "content": "...", "timestamp": "..."}]
         """
         try:
-            # 使用 checkpointer 的 get 方法获取最新的检查点
-            config = {"configurable": {"thread_id": session_id}}
-            
-            # 获取该 thread 的最新检查点
-            checkpoint_tuple = self.checkpointer.get(config)
-            
-            if not checkpoint_tuple:
+            messages = self._load_checkpoint_messages(session_id)
+            if not messages:
                 logger.info(f"获取会话历史: {session_id}, 消息数量: 0")
                 return []
-            
-            # checkpoint_tuple 可能是命名元组或普通元组，安全地提取 checkpoint
-            # 通常第一个元素是 checkpoint 数据
-            if hasattr(checkpoint_tuple, 'checkpoint'):
-                checkpoint_data = checkpoint_tuple.checkpoint  # type: ignore
-            else:
-                # 如果是普通元组，第一个元素是 checkpoint
-                checkpoint_data = checkpoint_tuple[0] if checkpoint_tuple else {}
-            
-            # 从检查点中提取消息
-            messages = checkpoint_data.get("channel_values", {}).get("messages", [])
             
             # 转换为前端需要的格式
             history = []
             for msg in messages:
-                # 跳过系统消息
+                # 跳过系统消息和内部压缩摘要
                 if isinstance(msg, SystemMessage):
+                    continue
+                if getattr(msg, "additional_kwargs", {}).get("lc_source") == "summarization":
                     continue
                     
                 role = "user" if isinstance(msg, HumanMessage) else "assistant"

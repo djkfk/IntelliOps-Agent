@@ -51,6 +51,7 @@ async def chat(request: ChatRequest):
                 "success": True,
                 "answer": answer,
                 "rag": rag_meta,
+                "context": result.get("context") if isinstance(result, dict) else None,
                 "errorMessage": None
             }
         }
@@ -116,6 +117,14 @@ async def chat_stream(request: ChatRequest):
                         "event": "message",
                         "data": json.dumps({
                             "type": "status",
+                            "data": chunk_data
+                        }, ensure_ascii=False)
+                    }
+                elif chunk_type == "context":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps({
+                            "type": "context",
                             "data": chunk_data
                         }, ensure_ascii=False)
                     }

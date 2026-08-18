@@ -10,6 +10,9 @@ class IntelliOpsAgentApp {
         this.isCurrentChatFromHistory = false; // 标记当前对话是否是从历史记录加载的
         this._isAIOpsSession = false; // 当前是否为 AIOps 诊断会话
         this._aiopsHistorySaved = false; // AIOps 结果是否已写入侧边栏历史
+        this._contextMaxTokens = 24000;
+        this._contextBaseTokens = 0;
+        this._contextTagTimer = null;
         
         this.initializeElements();
         this.bindEvents();
@@ -18,6 +21,7 @@ class IntelliOpsAgentApp {
         this.initMarkdown();
         this.checkAndSetCentered();
         this.renderChatHistory();
+        this.refreshContextMeterFromLocal();
     }
 
     // 初始化Markdown配置
@@ -125,6 +129,10 @@ class IntelliOpsAgentApp {
         this.chatContainer = document.querySelector('.chat-container');
         this.welcomeGreeting = document.getElementById('welcomeGreeting');
         this.chatHistoryList = document.getElementById('chatHistoryList');
+        this.contextMeter = document.getElementById('contextMeter');
+        this.contextMeterFill = document.getElementById('contextMeterFill');
+        this.contextMeterValue = document.getElementById('contextMeterValue');
+        this.contextMeterTag = document.getElementById('contextMeterTag');
 
         // 知识点沉淀弹窗
         this.knowledgeModal = document.getElementById('knowledgeModal');
@@ -180,6 +188,7 @@ class IntelliOpsAgentApp {
             this.messageInput.addEventListener('input', () => {
                 this.autosizeComposer();
                 this.syncSendAfford();
+                this.refreshContextMeterFromLocal();
             });
         }
 
@@ -352,6 +361,8 @@ class IntelliOpsAgentApp {
         
         // 生成新的会话ID
         this.sessionId = this.generateSessionId();
+        this._contextBaseTokens = 0;
+        this.renderContextMeter(0, { instant: true });
         
         // 重置模式为快速
         this.currentMode = 'quick';
@@ -578,6 +589,8 @@ class IntelliOpsAgentApp {
         // AIOps 仅保存在本地，不走 RAG 会话接口
         if (history.type === 'aiops') {
             renderLocalHistory();
+            this._contextBaseTokens = this._estimateHistoryTokens();
+            this.refreshContextMeterFromLocal();
             this.checkAndSetCentered();
             this.renderChatHistory();
             this.updateUI();
@@ -602,6 +615,11 @@ class IntelliOpsAgentApp {
                         backendHistory.forEach(msg => {
                             const messageType = msg.role === 'user' ? 'user' : 'assistant';
                             this.addMessage(messageType, msg.content, false, false);
+                            this.currentChatHistory.push({
+                                type: messageType,
+                                content: msg.content,
+                                timestamp: msg.timestamp || new Date().toISOString()
+                            });
                         });
                     } else {
                         this.currentChatHistory = [...history.messages];
@@ -622,6 +640,8 @@ class IntelliOpsAgentApp {
         this.checkAndSetCentered();
         this.renderChatHistory();
         this.updateUI();
+        this._contextBaseTokens = this._estimateHistoryTokens();
+        this.refreshContextMeterFromLocal();
     }
     
     // 删除历史对话
@@ -657,6 +677,8 @@ class IntelliOpsAgentApp {
                         this.chatMessages.innerHTML = '';
                     }
                     this.sessionId = this.generateSessionId();
+                    this._contextBaseTokens = 0;
+                    this.renderContextMeter(0, { instant: true });
                     this.checkAndSetCentered();
                 }
                 
@@ -838,6 +860,7 @@ class IntelliOpsAgentApp {
                     const assistantEl = this.addMessage('assistant', answer);
                     this.attachRagSources(assistantEl, chatResponse.rag);
                     this.attachPrecipitateButton(assistantEl, message, answer);
+                    this.applyContextSnapshot(chatResponse.context);
                 } else if (chatResponse && chatResponse.errorMessage) {
                     // 业务错误
                     throw new Error(chatResponse.errorMessage);
@@ -946,6 +969,8 @@ class IntelliOpsAgentApp {
                                             assistantMessageElement,
                                             statusData.message || '思考中…'
                                         );
+                                    } else if (sseMessage.type === 'context') {
+                                        this.applyContextSnapshot(sseMessage.data);
                                     } else if (sseMessage.type === 'tool_call') {
                                         const toolData = sseMessage.data || {};
                                         if (toolData.tool === 'retrieve_knowledge') {
@@ -1000,6 +1025,9 @@ class IntelliOpsAgentApp {
                                         console.log('[SSE调试] 收到完成标记，流结束');
                                         if (sseMessage.data && sseMessage.data.rag) {
                                             ragMeta = sseMessage.data.rag;
+                                        }
+                                        if (sseMessage.data && sseMessage.data.context) {
+                                            this.applyContextSnapshot(sseMessage.data.context);
                                         }
                                         this.handleStreamComplete(assistantMessageElement, fullResponse, ragMeta);
                                         return;
@@ -1622,6 +1650,93 @@ class IntelliOpsAgentApp {
             this.appLayout.classList.add('rail-min');
         }
         this.syncSendAfford();
+    }
+
+    _estimateHistoryTokens() {
+        return (this.currentChatHistory || []).reduce(
+            (sum, msg) => sum + String(msg.content || '').length,
+            0
+        );
+    }
+
+    _formatTokenCount(count) {
+        if (count >= 1000) {
+            return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+        }
+        return String(count);
+    }
+
+    refreshContextMeterFromLocal() {
+        const draft = (this.messageInput && this.messageInput.value) ? this.messageInput.value.length : 0;
+        const tokens = this._contextBaseTokens > 0
+            ? this._contextBaseTokens + draft
+            : this._estimateHistoryTokens() + draft;
+        this.renderContextMeter(tokens);
+    }
+
+    applyContextSnapshot(data) {
+        if (!data || typeof data !== 'object') {
+            this.refreshContextMeterFromLocal();
+            return;
+        }
+        if (data.max_tokens) {
+            this._contextMaxTokens = data.max_tokens;
+        }
+        const nextTokens = Number(data.tokens) || 0;
+        const previous = Number(data.tokens_before);
+        if (data.compressed && previous > nextTokens) {
+            this.renderContextMeter(previous, { instant: true });
+            requestAnimationFrame(() => {
+                this.renderContextMeter(nextTokens, { compressed: true });
+            });
+        } else {
+            this.renderContextMeter(nextTokens, { compressed: !!data.compressed });
+        }
+        this._contextBaseTokens = nextTokens;
+    }
+
+    renderContextMeter(tokens, options = {}) {
+        const meter = this.contextMeter;
+        const fill = this.contextMeterFill;
+        const valueEl = this.contextMeterValue;
+        if (!meter || !fill || !valueEl) {
+            return;
+        }
+        const maxTokens = Math.max(this._contextMaxTokens || 24000, 1);
+        const safeTokens = Math.max(0, Number(tokens) || 0);
+        const percent = Math.min(100, Math.round((safeTokens / maxTokens) * 100));
+        let level = 'low';
+        if (percent >= 85) {
+            level = 'high';
+        } else if (percent >= 60) {
+            level = 'mid';
+        }
+        if (options.instant) {
+            fill.style.transition = 'none';
+        } else {
+            fill.style.transition = '';
+        }
+        fill.style.width = `${percent}%`;
+        meter.dataset.level = level;
+        valueEl.textContent = `${percent}%`;
+        const label = `上下文 ${this._formatTokenCount(safeTokens)} / ${this._formatTokenCount(maxTokens)}`;
+        meter.title = label;
+        meter.setAttribute('aria-label', `${label}，占用 ${percent}%`);
+        if (options.compressed && this.contextMeterTag) {
+            meter.classList.remove('is-compressing');
+            void meter.offsetWidth;
+            meter.classList.add('is-compressing');
+            this.contextMeterTag.hidden = false;
+            this.contextMeterTag.classList.add('is-on');
+            clearTimeout(this._contextTagTimer);
+            this._contextTagTimer = setTimeout(() => {
+                if (this.contextMeterTag) {
+                    this.contextMeterTag.hidden = true;
+                    this.contextMeterTag.classList.remove('is-on');
+                }
+                meter.classList.remove('is-compressing');
+            }, 2400);
+        }
     }
 
     toggleSidebar() {

@@ -482,6 +482,80 @@ body {
     color: var(--faint);
 }
 
+.context-meter {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: var(--mute);
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+}
+
+.context-meter-label {
+    color: var(--faint);
+    font-size: 0.64rem;
+}
+
+.context-meter-track {
+    width: 72px;
+    height: 4px;
+    border-radius: 99px;
+    background: rgba(214, 222, 230, 0.1);
+    overflow: hidden;
+}
+
+.context-meter-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: inherit;
+    background: var(--ok);
+    transform-origin: left center;
+    transition: width 0.55s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.28s ease;
+}
+
+.context-meter[data-level="mid"] .context-meter-fill {
+    background: var(--accent);
+}
+
+.context-meter[data-level="high"] .context-meter-fill {
+    background: var(--danger);
+}
+
+.context-meter.is-compressing .context-meter-fill {
+    animation: context-compress-pulse 0.8s ease;
+}
+
+.context-meter-value {
+    min-width: 2.4em;
+    color: var(--mute);
+    font-variant-numeric: tabular-nums;
+}
+
+.context-meter-tag {
+    padding: 1px 6px;
+    border-radius: 99px;
+    background: var(--accent-dim);
+    color: var(--accent-strong);
+    font-size: 0.62rem;
+}
+
+.context-meter-tag.is-on {
+    animation: context-tag-in 0.35s ease;
+}
+
+@keyframes context-compress-pulse {
+    0%, 100% { filter: none; }
+    40% { filter: brightness(1.45); }
+}
+
+@keyframes context-tag-in {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: none; }
+}
+
 .chat-container {
     flex: 1;
     display: flex;
@@ -1681,6 +1755,14 @@ body {
 
     .topbar-hint {
         display: none;
+    }
+
+    .context-meter-label {
+        display: none;
+    }
+
+    .context-meter-track {
+        width: 56px;
     }
 
     .stage-title {
