@@ -101,6 +101,7 @@ class AIOpsService:
                 "input": user_input,
                 "plan": [],
                 "past_steps": [],
+                "tool_trace": [],
                 "response": ""
             }
 
@@ -133,17 +134,20 @@ class AIOpsService:
             # 获取最终状态
             final_state = self.graph.get_state(config_dict)
             final_response = ""
+            tool_trace: list = []
 
             # 安全地获取响应（处理 values 可能为 None 的情况）
             if final_state and final_state.values:
                 final_response = final_state.values.get("response", "")
+                tool_trace = list(final_state.values.get("tool_trace") or [])
 
             # 发送完成事件
             yield {
                 "type": "complete",
                 "stage": "complete",
                 "message": "任务执行完成",
-                "response": final_response
+                "response": final_response,
+                "tool_trace": tool_trace,
             }
 
             logger.info(f"[会话 {session_id}] 任务执行完成")

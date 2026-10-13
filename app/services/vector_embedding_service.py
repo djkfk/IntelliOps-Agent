@@ -1,6 +1,6 @@
 """向量嵌入服务模块 - 基于 LangChain Embeddings 标准接口"""
 
-from typing import List
+from typing import Any, List
 
 from langchain_core.embeddings import Embeddings
 from openai import OpenAI
@@ -40,6 +40,7 @@ class DashScopeEmbeddings(Embeddings):
         )
         self.model = model
         self.dimensions = dimensions
+        self.total_tokens = 0
         
         # 打印初始化信息
         masked_key = self._mask_api_key(api_key)
@@ -54,6 +55,19 @@ class DashScopeEmbeddings(Embeddings):
         if len(api_key) > 8:
             return f"{api_key[:8]}...{api_key[-4:]}"
         return "***"
+
+    def _record_usage(self, response: Any) -> None:
+        """累加本次 embedding 的 token，供离线评测读取。"""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        if isinstance(usage, dict):
+            total = usage.get("total_tokens") or usage.get("prompt_tokens") or 0
+        else:
+            total = getattr(usage, "total_tokens", None)
+            if total is None:
+                total = getattr(usage, "prompt_tokens", 0)
+        self.total_tokens += int(total or 0)
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """
@@ -78,7 +92,8 @@ class DashScopeEmbeddings(Embeddings):
                 dimensions=self.dimensions,
                 encoding_format="float"
             )
-            
+            self._record_usage(response)
+
             embeddings = [item.embedding for item in response.data]
             logger.debug(f"批量嵌入完成, 维度: {len(embeddings[0])}")
             
@@ -110,7 +125,8 @@ class DashScopeEmbeddings(Embeddings):
                 dimensions=self.dimensions,
                 encoding_format="float"
             )
-            
+            self._record_usage(response)
+
             embedding = response.data[0].embedding
             logger.debug(f"查询嵌入完成, 维度: {len(embedding)}")
             

@@ -21,7 +21,8 @@ NC = \033[0m
         install install-dev dev run test test-quick format lint fix type-check \
         security pre-commit-install pre-commit check-all coverage docs shell \
         ipython watch add add-dev remove list-docs test-upload sync logs \
-        start-cls stop-cls start-monitor stop-monitor start-api stop-api status-mcp
+        start-cls stop-cls start-monitor stop-monitor start-api stop-api status-mcp \
+        eval-rag eval-rag-stability eval-aiops
 
 # ============================================================
 # 默认目标：显示帮助信息
@@ -75,6 +76,11 @@ help:
 	@echo "  $(YELLOW)make fix$(NC)          - 🔧 自动修复问题"
 	@echo "  $(YELLOW)make test$(NC)         - 🧪 运行测试"
 	@echo "  $(YELLOW)make check-all$(NC)    - ✅ 运行所有检查"
+	@echo ""
+	@echo "$(CYAN)【RAG 评测】$(NC)"
+	@echo "  $(YELLOW)make eval-rag$(NC)     - 📏 离线评测检索质量（50 条金标）"
+	@echo "  $(YELLOW)make eval-rag-stability$(NC) - 🔁 同一批题重复 5 次看稳定性"
+	@echo "  $(YELLOW)make eval-aiops$(NC)   - 🧭 评测 AIOps 工具轨迹"
 	@echo ""
 	@echo "$(CYAN)【其他】$(NC)"
 	@echo "  $(YELLOW)make clean$(NC)        - 🧹 清理临时文件"
@@ -564,6 +570,18 @@ test:  ## 运行测试
 test-quick:  ## 快速测试
 	@echo "$(YELLOW)⚡ 快速测试...$(NC)"
 	python3 -m pytest tests/ -v
+
+eval-rag:  ## 离线评测 RAG 召回率/准确率/效率提升（相对纯向量）
+	@echo "$(YELLOW)📏 运行 RAG 离线评测（50 条金标，含重排对比）...$(NC)"
+	python3 scripts/eval_rag.py --gold eval/gold/sample.jsonl --stage rerank
+
+eval-rag-stability:  ## 同一 RAG 金标重复 5 次，看命中是否稳定
+	@echo "$(YELLOW)🔁 RAG 稳定性评测（50 条 × 5 次，只评检索）...$(NC)"
+	python3 scripts/eval_rag.py --gold eval/gold/sample.jsonl --stage rerank --runs 5
+
+eval-aiops:  ## 离线评测 AIOps 工具选择、参数和步数
+	@echo "$(YELLOW)🧭 AIOps 轨迹评测（需 MCP 与模型）...$(NC)"
+	python3 scripts/eval_aiops.py --gold eval/gold/aiops_trajectory.jsonl
 
 check-all:  ## 运行所有检查
 	@echo "$(YELLOW)🚀 运行所有检查...$(NC)"

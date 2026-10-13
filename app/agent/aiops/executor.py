@@ -3,7 +3,7 @@ Executor 节点：执行单个步骤
 基于 LangGraph 官方教程实现
 """
 
-from typing import Dict, Any
+from typing import Any, Dict
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_qwq import ChatQwen
 from langgraph.prebuilt import ToolNode
@@ -13,6 +13,62 @@ from app.config import config
 from app.tools import get_current_time, retrieve_knowledge
 from app.agent.mcp_client import get_mcp_client_with_retry
 from .state import PlanExecuteState
+
+
+def _normalize_tool_calls(tool_calls: Any) -> list[dict]:
+    """把 LangChain 工具调用收成 {name, args}，便于轨迹评测比对。"""
+    normalized: list[dict] = []
+    for call in tool_calls or []:
+        if isinstance(call, dict):
+            name = str(call.get("name") or "")
+            raw_args = call.get("args") if isinstance(call.get("args"), dict) else {}
+        else:
+            name = str(getattr(call, "name", "") or "")
+            raw_args = getattr(call, "args", {}) or {}
+            if not isinstance(raw_args, dict):
+                raw_args = {}
+        if name:
+            normalized.append({"name": name, "args": raw_args})
+    return normalized
+
+
+def _message_usage(message: Any) -> tuple[int, int]:
+    """从单次模型响应取出 prompt / completion token。没有用量时返回 0。"""
+    meta = getattr(message, "usage_metadata", None) or {}
+    if not isinstance(meta, dict):
+        prompt = int(getattr(meta, "input_tokens", 0) or 0)
+        completion = int(getattr(meta, "output_tokens", 0) or 0)
+        return prompt, completion
+    if meta.get("input_tokens") or meta.get("output_tokens"):
+        return int(meta.get("input_tokens") or 0), int(meta.get("output_tokens") or 0)
+    raw = getattr(message, "response_metadata", None) or {}
+    usage = raw.get("token_usage") or raw.get("usage") or {} if isinstance(raw, dict) else {}
+    if not isinstance(usage, dict):
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        return prompt, completion
+    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    return prompt, completion
+
+
+def _trace_item(
+    task: str,
+    calls: list[dict],
+    prompt_tokens: int,
+    completion_tokens: int,
+    error: str = "",
+) -> dict:
+    """单步轨迹。calls 为空表示这一步没有调工具。"""
+    item = {
+        "step": task,
+        "calls": calls,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }
+    if error:
+        item["error"] = error
+    return item
 
 
 async def executor(state: PlanExecuteState) -> Dict[str, Any]:
@@ -33,6 +89,9 @@ async def executor(state: PlanExecuteState) -> Dict[str, Any]:
     # 取出第一个步骤
     task = plan[0]
     logger.info(f"当前任务: {task}")
+    calls: list[dict] = []
+    prompt_tokens = 0
+    completion_tokens = 0
 
     try:
         # 获取本地工具
@@ -80,20 +139,28 @@ async def executor(state: PlanExecuteState) -> Dict[str, Any]:
 
         # 第一步：LLM 决定是否调用工具
         llm_response = await llm_with_tools.ainvoke(messages)
+        in_tokens, out_tokens = _message_usage(llm_response)
+        prompt_tokens += in_tokens
+        completion_tokens += out_tokens
         logger.info(f"LLM 响应类型: {type(llm_response)}")
 
         # 第二步：如果有工具调用，执行工具
         if hasattr(llm_response, "tool_calls") and llm_response.tool_calls:
-            logger.info(f"检测到 {len(llm_response.tool_calls)} 个工具调用")
-            
+            calls = _normalize_tool_calls(llm_response.tool_calls)
+            logger.info(f"检测到 {len(calls)} 个工具调用")
+
             # 使用 ToolNode 自动执行工具
             messages.append(llm_response)
             tool_messages = await tool_node.ainvoke({"messages": messages})
-            
+
             # 第三步：将工具结果返回给 LLM 生成最终答案
             messages.extend(tool_messages["messages"])
             final_response = await llm_with_tools.ainvoke(messages)
-            result = final_response.content if hasattr(final_response, 'content') else str(final_response)
+            in_tokens, out_tokens = _message_usage(final_response)
+            prompt_tokens += in_tokens
+            completion_tokens += out_tokens
+            content = getattr(final_response, "content", None)
+            result = content if isinstance(content, str) else str(final_response)
         else:
             # 没有工具调用，直接使用 LLM 的输出
             logger.info("LLM 未调用工具，直接返回结果")
@@ -105,6 +172,7 @@ async def executor(state: PlanExecuteState) -> Dict[str, Any]:
         return {
             "plan": plan[1:],  # 移除第一个步骤
             "past_steps": [(task, result)],  # 使用 operator.add 追加
+            "tool_trace": [_trace_item(task, calls, prompt_tokens, completion_tokens)],
         }
 
     except Exception as e:
@@ -112,4 +180,7 @@ async def executor(state: PlanExecuteState) -> Dict[str, Any]:
         return {
             "plan": plan[1:],
             "past_steps": [(task, f"执行失败: {str(e)}")],
+            "tool_trace": [
+                _trace_item(task, calls, prompt_tokens, completion_tokens, error=str(e))
+            ],
         }
