@@ -1406,6 +1406,17 @@ body {
     word-break: break-all;
 }
 
+.rag-kind-wiki {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    color: var(--accent-strong);
+    border: 1px solid rgba(196, 165, 116, 0.4);
+    vertical-align: 1px;
+}
+
 .rag-source-title {
     color: var(--mute);
     margin-top: 2px;
@@ -1577,7 +1588,7 @@ body {
 
 .knowledge-modal-panel {
     position: relative;
-    width: min(480px, 100vw);
+    width: min(560px, 100vw);
     height: 100%;
     max-height: 100dvh;
     background: var(--bg-raised);
@@ -1666,6 +1677,77 @@ body {
     line-height: 1.5;
     font-family: var(--mono);
     font-size: 0.82rem;
+}
+
+.wiki-proposal-status {
+    color: var(--mute);
+    font-size: 0.88rem;
+    padding: 12px 0;
+}
+
+.wiki-change-card {
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg);
+}
+
+.wiki-change-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.wiki-change-path {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--ink);
+    word-break: break-all;
+}
+
+.wiki-change-tag {
+    font-size: 0.68rem;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--mute);
+}
+
+.wiki-change-tag.create {
+    color: var(--ok);
+    border-color: rgba(122, 158, 134, 0.45);
+}
+
+.wiki-change-reason {
+    color: var(--mute);
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+
+.wiki-change-before {
+    border-top: 1px solid var(--line);
+    padding-top: 6px;
+}
+
+.wiki-change-before summary {
+    cursor: pointer;
+    color: var(--mute);
+    font-size: 0.75rem;
+}
+
+.wiki-change-before pre {
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--mute);
+    max-height: 180px;
+    overflow: auto;
 }
 
 .knowledge-modal-footer {

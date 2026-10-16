@@ -26,7 +26,7 @@ from app.agent.context_manager import (
 )
 from app.agent.mcp_client import get_mcp_client_with_retry
 from app.config import config
-from app.tools import get_current_time, retrieve_knowledge
+from app.tools import get_current_time, read_wiki, retrieve_knowledge
 from app.tools.knowledge_tool import (
     clear_last_rag_result,
     get_last_rag_result,
@@ -60,7 +60,7 @@ class RagAgentService:
         )
 
         # 定义基础工具
-        self.tools = [retrieve_knowledge, get_current_time]
+        self.tools = [read_wiki, retrieve_knowledge, get_current_time]
 
         # MCP 客户端（延迟初始化，使用全局管理）
         self.mcp_tools: list = []
@@ -159,8 +159,11 @@ class RagAgentService:
             工作原则:
             1. 理解用户需求，选择合适的工具来完成任务
             2. 当需要获取实时信息或专业知识时，主动使用相关工具
-            3. 基于工具返回的结果提供准确、专业的回答
-            4. 如果工具无法提供足够信息，请诚实地告知用户
+            3. 运维类问题先用 read_wiki 读取 Wiki，获取已整理的结论和历史案例
+            4. 需要原文细节或引用时，再用 retrieve_knowledge 检索知识库
+            5. Wiki 与知识库原文冲突时，以知识库原文为准
+            6. 基于工具返回的结果提供准确、专业的回答
+            7. 如果工具无法提供足够信息，请诚实地告知用户
 
             回答要求:
             - 保持友好、专业的语气

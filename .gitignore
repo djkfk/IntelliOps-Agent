@@ -68,6 +68,9 @@ volumes/
 uploads/
 *.tmp
 
+# Wiki 跨进程写锁
+wiki/.write.lock
+
 # OS
 .DS_Store
 Thumbs.db
@@ -84,4 +87,7 @@ dmypy.json
 
 # Ruff
 .ruff_cache/
+
+# RAG 离线评测报告
+eval/reports/
 

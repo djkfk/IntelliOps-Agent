@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     chunk_max_size: int = 800
     chunk_overlap: int = 100
 
+    # 运维 Wiki（LLM 维护的 Markdown 知识页，人工确认后写入）
+    wiki_dir: str = "./wiki"
+    wiki_max_pages_per_proposal: int = 3
+    wiki_max_page_chars: int = 20000
+    wiki_llm_timeout_seconds: float = 90
+
     # 对话上下文管理（超过阈值后摘要压缩，保留近几轮原文）
     context_enabled: bool = True
     context_max_tokens: int = 24000

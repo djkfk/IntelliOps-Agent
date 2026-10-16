@@ -161,20 +161,15 @@
         <div class="knowledge-modal-backdrop" id="knowledgeModalBackdrop"></div>
         <div class="knowledge-modal-panel" role="dialog" aria-labelledby="knowledgeModalTitle">
             <div class="knowledge-modal-header">
-                <h3 id="knowledgeModalTitle">沉淀为知识点</h3>
+                <h3 id="knowledgeModalTitle">沉淀到 Wiki</h3>
                 <button type="button" class="knowledge-modal-close" id="knowledgeModalClose" title="关闭" aria-label="关闭">
                     <i class="ph ph-x"></i>
                 </button>
             </div>
-            <div class="knowledge-modal-body">
-                <label class="knowledge-field-label" for="knowledgeTitleInput">标题</label>
-                <input type="text" id="knowledgeTitleInput" class="knowledge-title-input" maxlength="80" placeholder="知识点标题">
-                <label class="knowledge-field-label" for="knowledgeContentInput">FAQ 内容（可编辑）</label>
-                <textarea id="knowledgeContentInput" class="knowledge-content-input" rows="14" placeholder="正在生成草稿"></textarea>
-            </div>
+            <div class="knowledge-modal-body" id="wikiChangeList"></div>
             <div class="knowledge-modal-footer">
                 <button type="button" class="knowledge-btn knowledge-btn-secondary" id="knowledgeCancelBtn">取消</button>
-                <button type="button" class="knowledge-btn knowledge-btn-primary" id="knowledgeConfirmBtn">确认入库</button>
+                <button type="button" class="knowledge-btn knowledge-btn-primary" id="knowledgeConfirmBtn">确认写入</button>
             </div>
         </div>
     </div>

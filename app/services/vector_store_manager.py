@@ -92,6 +92,35 @@ class VectorStoreManager:
             logger.error(f"添加文档失败: {e}")
             raise
 
+    def list_ids_by_source(self, file_path: str) -> List[str]:
+        """查出该来源已有分片的主键。查询失败时返回空列表，调用方仍可写入新分片。"""
+        try:
+            collection = milvus_manager.get_collection()
+            expr = f'metadata["_source"] == "{_escape_expr(file_path)}"'
+            rows = collection.query(expr=expr, output_fields=["id"], limit=16384)
+            return [str(row["id"]) for row in rows if row.get("id") is not None]
+        except Exception as e:
+            logger.warning(f"查询旧分片失败，本次不删除旧数据: {file_path}, {e}")
+            return []
+
+    def delete_by_ids(self, ids: List[str]) -> int:
+        """按主键删除分片。只删除调用前记下的旧 id，不会误删刚写入的新分片。"""
+        if not ids:
+            return 0
+        try:
+            collection = milvus_manager.get_collection()
+            deleted = 0
+            for start in range(0, len(ids), 100):
+                batch = ids[start : start + 100]
+                quoted = ", ".join(f'"{_escape_expr(item)}"' for item in batch)
+                result = collection.delete(f"id in [{quoted}]")
+                deleted += result.delete_count if hasattr(result, "delete_count") else 0
+            logger.info(f"按主键删除旧分片: {deleted} 条")
+            return deleted
+        except Exception as e:
+            logger.warning(f"新分片已写入，删除旧分片失败: {e}")
+            return 0
+
     def delete_by_source(self, file_path: str) -> int:
         """
         删除指定文件的所有文档
@@ -108,7 +137,7 @@ class VectorStoreManager:
             
             # metadata 是 JSON 字段，使用 JSON 路径查询语法
             # _source 是文档的来源文件路径
-            expr = f'metadata["_source"] == "{file_path}"'
+            expr = f'metadata["_source"] == "{_escape_expr(file_path)}"'
             
             result = collection.delete(expr)
             deleted_count = result.delete_count if hasattr(result, "delete_count") else 0
@@ -147,6 +176,11 @@ class VectorStoreManager:
         except Exception as e:
             logger.error(f"相似度搜索失败: {e}")
             return []
+
+
+def _escape_expr(value: str) -> str:
+    """转义 Milvus 表达式中的引号和反斜杠。"""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 # 全局单例

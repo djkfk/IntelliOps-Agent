@@ -11,6 +11,7 @@ from loguru import logger
 from app.config import config
 from app.services.hybrid_retriever_service import hybrid_retriever_service
 from app.services.rerank_service import rerank_service
+from app.services.wiki_service import wiki_service
 
 # 协程内可读；工具若在线程池执行则同时写入全局，供请求协程读取
 _last_rag_result: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
@@ -70,11 +71,13 @@ def docs_to_sources(docs: List[Document]) -> List[Dict[str, str]]:
             or "未知来源"
         )
         content = doc.page_content or ""
+        raw_source = str(metadata.get("_source") or metadata.get("source") or "")
         sources.append(
             {
                 "source": str(source),
                 "title": " > ".join(headers),
                 "snippet": content[:120] + ("..." if len(content) > 120 else ""),
+                "kind": "wiki" if wiki_service.contains_source(raw_source) else "raw",
             }
         )
     return sources

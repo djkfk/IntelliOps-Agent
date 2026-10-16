@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from app.config import config
-from app.tools import get_current_time, retrieve_knowledge
+from app.services.wiki_service import wiki_service
+from app.tools import get_current_time, read_wiki, retrieve_knowledge
 from app.agent.mcp_client import get_mcp_client_with_retry
 from .state import PlanExecuteState
 from .utils import format_tools_description
@@ -45,6 +46,8 @@ planner_prompt = ChatPromptTemplate.from_messages(
                 - 每个步骤应该明确使用哪些工具(如果需要工具的话)来获取信息, 最好能同时提供工具执行所需要的参数
                 - 步骤之间应该有清晰的依赖关系
                 - 步骤描述要具体、可操作
+                - 若 Wiki 目录中有相关页面，安排一步使用 read_wiki 读取该页，并写明相对路径
+                - 需要原文细节时使用 retrieve_knowledge；Wiki 与原文冲突时以原文为准
                 - **如果有相关经验文档，请参考其中的方法和步骤制定计划**
 
                 示例输入："分析当前系统的性能问题"
@@ -77,6 +80,12 @@ async def planner(state: PlanExecuteState) -> Dict[str, Any]:
         # 步骤1: 查询内部文档获取相关经验
         logger.info("查询内部文档，寻找相关经验...")
         experience_docs = ""
+        wiki_index = ""
+        try:
+            wiki_index = wiki_service.read_page("index.md")
+            logger.info(f"已读取 Wiki 目录，长度: {len(wiki_index)}")
+        except Exception as e:
+            logger.warning(f"读取 Wiki 目录失败: {e}")
         try:
             # retrieve_knowledge 使用 response_format="content_and_artifact"
             # ainvoke() 只返回 content（字符串），不是元组
@@ -93,7 +102,8 @@ async def planner(state: PlanExecuteState) -> Dict[str, Any]:
         # 获取本地工具
         local_tools = [
             get_current_time,
-            retrieve_knowledge
+            read_wiki,
+            retrieve_knowledge,
         ]
 
         # 获取 MCP 工具
@@ -107,19 +117,26 @@ async def planner(state: PlanExecuteState) -> Dict[str, Any]:
         # 格式化工具描述
         tools_description = format_tools_description(all_tools)
 
-        # 步骤3: 格式化经验文档上下文
+        # 步骤3: 目录和原文用拼接写入，避免正文里的花括号被当成模板变量
+        context_parts: List[str] = []
+        if wiki_index.strip():
+            wiki_intro = dedent("""
+                ## Wiki 目录
+
+                以下目录由系统维护。若某一步需要已整理的结论或历史案例，
+                请在步骤中写明调用 read_wiki，并给出相对路径
+                （例如 alerts/HighCPUUsage.md）。
+                Wiki 与原文冲突时，以知识库原文为准。
+            """).strip()
+            context_parts.append(wiki_intro + "\n\n" + wiki_index.strip())
         if experience_docs:
-            experience_context = dedent(f"""
+            doc_intro = dedent("""
                 ## 相关经验文档
 
                 以下是从知识库中检索到的相关经验和最佳实践，请参考这些经验制定执行计划：
-
-                {experience_docs}
-
-                ---
             """).strip()
-        else:
-            experience_context = ""
+            context_parts.append(doc_intro + "\n\n" + experience_docs.strip() + "\n\n---")
+        experience_context = "\n\n".join(context_parts)
 
         # 步骤4: 创建 LLM 并生成计划
         llm = ChatQwen(

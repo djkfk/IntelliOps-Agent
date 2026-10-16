@@ -37,18 +37,3 @@ class HealthResponse(BaseModel):
     service: str = Field(..., description="服务名称")
     version: str = Field(..., description="版本号")
 
-
-class KnowledgeDraftData(BaseModel):
-    """知识点草稿数据"""
-
-    title: str = Field(..., description="建议标题")
-    content: str = Field(..., description="可编辑 FAQ Markdown")
-
-
-class KnowledgeConfirmData(BaseModel):
-    """知识点确认入库结果"""
-
-    success: bool = Field(..., description="是否成功")
-    filename: str = Field(..., description="落盘文件名")
-    file_path: str = Field(..., description="文件路径")
-    chunk_count: int = Field(default=0, description="索引分片数量")

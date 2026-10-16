@@ -134,20 +134,21 @@ class IntelliOpsAgentApp {
         this.contextMeterValue = document.getElementById('contextMeterValue');
         this.contextMeterTag = document.getElementById('contextMeterTag');
 
-        // 知识点沉淀弹窗
+        // Wiki 沉淀弹窗
         this.knowledgeModal = document.getElementById('knowledgeModal');
         this.knowledgeModalBackdrop = document.getElementById('knowledgeModalBackdrop');
         this.knowledgeModalClose = document.getElementById('knowledgeModalClose');
-        this.knowledgeTitleInput = document.getElementById('knowledgeTitleInput');
-        this.knowledgeContentInput = document.getElementById('knowledgeContentInput');
+        this.wikiChangeList = document.getElementById('wikiChangeList');
         this.knowledgeCancelBtn = document.getElementById('knowledgeCancelBtn');
         this.knowledgeConfirmBtn = document.getElementById('knowledgeConfirmBtn');
         this._precipitateTriggerBtn = null;
-        // 草稿缓存 / 在途请求去重（按问答内容）
-        this._knowledgeDraftCache = new Map();
-        this._knowledgeDraftPending = new Map();
-        this._knowledgeDraftKey = null;
-        this._knowledgeDraftLoading = false;
+        this._precipitateSourceType = 'qa';
+        // 提案缓存 / 在途请求去重（按来源和正文）
+        this._wikiProposalCache = new Map();
+        this._wikiProposalPending = new Map();
+        this._wikiProposalKey = null;
+        this._wikiProposalLoading = false;
+        this._activeProposal = null;
         
         // 初始化时检查是否需要居中
         this.checkAndSetCentered();
@@ -238,7 +239,7 @@ class IntelliOpsAgentApp {
                     this.closeSidebar();
                 }
                 if (this.knowledgeModal && this.knowledgeModal.style.display !== 'none') {
-                    if (!this._knowledgeDraftLoading) {
+                    if (!this._wikiProposalLoading) {
                         this.closeKnowledgeModal();
                     }
                 }
@@ -255,15 +256,15 @@ class IntelliOpsAgentApp {
         if (this.knowledgeModalBackdrop) {
             this.knowledgeModalBackdrop.addEventListener('click', () => {
                 // 生成中禁止点遮罩关闭，避免误关后重复请求
-                if (this._knowledgeDraftLoading) {
-                    this.showNotification('草稿生成中，请稍候…', 'warning');
+                if (this._wikiProposalLoading) {
+                    this.showNotification('提案生成中，请稍候…', 'warning');
                     return;
                 }
                 this.closeKnowledgeModal();
             });
         }
         if (this.knowledgeConfirmBtn) {
-            this.knowledgeConfirmBtn.addEventListener('click', () => this.confirmKnowledgePrecipitate());
+            this.knowledgeConfirmBtn.addEventListener('click', () => this.confirmWikiProposal());
         }
         
         // 工具按钮和菜单
@@ -1379,10 +1380,13 @@ class IntelliOpsAgentApp {
                 item.className = 'rag-source-item';
                 const title = src.title ? this.escapeHtml(src.title) : '';
                 const source = this.escapeHtml(src.source || '未知来源');
+                const kind = src.kind === 'wiki'
+                    ? '<span class="rag-kind-wiki">Wiki</span>'
+                    : '';
                 item.innerHTML = `
                     <div class="rag-source-index">#${idx + 1}</div>
                     <div class="rag-source-main">
-                        <div class="rag-source-file">${source}</div>
+                        <div class="rag-source-file">${source}${kind}</div>
                         ${title ? `<div class="rag-source-title">${title}</div>` : ''}
                     </div>
                 `;
@@ -1411,9 +1415,12 @@ class IntelliOpsAgentApp {
         return '';
     }
 
-    // 在助手消息下挂载「沉淀为知识点」按钮
-    attachPrecipitateButton(messageElement, question, answer) {
-        if (!messageElement || !question || !answer) {
+    // 在助手消息下挂载「沉淀到 Wiki」按钮
+    attachPrecipitateButton(messageElement, question, answer, sourceType = 'qa') {
+        if (!messageElement || !answer) {
+            return;
+        }
+        if (sourceType === 'qa' && !question) {
             return;
         }
         if (messageElement.querySelector('.precipitate-btn')) {
@@ -1427,122 +1434,213 @@ class IntelliOpsAgentApp {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'precipitate-btn';
-        btn.textContent = '沉淀为知识点';
+        btn.textContent = '沉淀到 Wiki';
         btn.addEventListener('click', () => {
-            this.openKnowledgeDraft(question, answer, btn);
+            this.openWikiProposal(question, answer, sourceType, btn);
         });
 
         actions.appendChild(btn);
         wrapper.appendChild(actions);
     }
 
-    _knowledgeDraftCacheKey(question, answer) {
-        return `${question}\n---\n${answer}`;
+    _wikiProposalCacheKey(sourceType, question, answer) {
+        return `${sourceType}\n---\n${question || ''}\n---\n${answer}`;
     }
 
-    _fillKnowledgeDraftForm(title, content, loading) {
-        if (this.knowledgeTitleInput) {
-            this.knowledgeTitleInput.value = title || '';
-            this.knowledgeTitleInput.disabled = loading;
+    _renderWikiProposal(changes, loading) {
+        if (!this.wikiChangeList) {
+            return;
         }
-        if (this.knowledgeContentInput) {
-            this.knowledgeContentInput.value = content || '';
-            this.knowledgeContentInput.disabled = loading;
-        }
+        this.wikiChangeList.innerHTML = '';
         if (this.knowledgeConfirmBtn) {
-            this.knowledgeConfirmBtn.disabled = loading;
+            this.knowledgeConfirmBtn.disabled = loading || !changes || changes.length === 0;
         }
-        this._knowledgeDraftLoading = loading;
+        this._wikiProposalLoading = loading;
+
+        if (loading) {
+            const status = document.createElement('div');
+            status.className = 'wiki-proposal-status';
+            status.textContent = '正在生成 Wiki 修改提案，请稍候...';
+            this.wikiChangeList.appendChild(status);
+            return;
+        }
+
+        if (!changes || changes.length === 0) {
+            const status = document.createElement('div');
+            status.className = 'wiki-proposal-status';
+            status.textContent = '没有需要更新的页面';
+            this.wikiChangeList.appendChild(status);
+            return;
+        }
+
+        changes.forEach((change) => {
+            const card = document.createElement('section');
+            card.className = 'wiki-change-card';
+            card.dataset.path = change.path || '';
+            card.dataset.action = change.action || 'update';
+            card.dataset.baseHash = change.base_hash || '';
+
+            const head = document.createElement('div');
+            head.className = 'wiki-change-head';
+            const path = document.createElement('div');
+            path.className = 'wiki-change-path';
+            path.textContent = change.path || '';
+            const tag = document.createElement('span');
+            const isCreate = change.action === 'create';
+            tag.className = `wiki-change-tag ${isCreate ? 'create' : 'update'}`;
+            tag.textContent = isCreate ? '新建' : '更新';
+            head.appendChild(path);
+            head.appendChild(tag);
+
+            const reason = document.createElement('div');
+            reason.className = 'wiki-change-reason';
+            reason.textContent = change.reason || '';
+
+            const label = document.createElement('label');
+            label.className = 'knowledge-field-label';
+            label.textContent = '修改后（可编辑）';
+
+            const area = document.createElement('textarea');
+            area.className = 'knowledge-content-input';
+            area.rows = 12;
+            area.value = change.after || '';
+            area.disabled = false;
+
+            card.appendChild(head);
+            if (change.reason) {
+                card.appendChild(reason);
+            }
+            if (change.action === 'update' && change.before) {
+                const details = document.createElement('details');
+                details.className = 'wiki-change-before';
+                const summary = document.createElement('summary');
+                summary.textContent = '查看修改前';
+                const pre = document.createElement('pre');
+                pre.textContent = change.before;
+                details.appendChild(summary);
+                details.appendChild(pre);
+                card.appendChild(details);
+            }
+            card.appendChild(label);
+            card.appendChild(area);
+            this.wikiChangeList.appendChild(card);
+        });
     }
 
-    async _requestKnowledgeDraft(question, answer) {
-        const response = await fetch(`${this.apiBaseUrl}/knowledge/draft`, {
+    _syncActiveProposalFromDom() {
+        if (!this._activeProposal || !this.wikiChangeList || this._wikiProposalLoading) {
+            return;
+        }
+        const cards = this.wikiChangeList.querySelectorAll('.wiki-change-card');
+        cards.forEach((card, idx) => {
+            const area = card.querySelector('textarea');
+            if (area && this._activeProposal.changes[idx]) {
+                this._activeProposal.changes[idx].after = area.value;
+            }
+        });
+    }
+
+    async _readErrorDetail(response, fallback) {
+        try {
+            const body = await response.json();
+            if (typeof body.detail === 'string' && body.detail) {
+                return body.detail;
+            }
+            if (body.data && body.data.errorMessage) {
+                return body.data.errorMessage;
+            }
+            return body.message || fallback;
+        } catch (error) {
+            return fallback;
+        }
+    }
+
+    async _requestWikiProposal(question, answer, sourceType) {
+        const response = await fetch(`${this.apiBaseUrl}/wiki/propose`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+                source_type: sourceType,
                 session_id: this.sessionId,
-                question: question,
+                question: question || null,
                 answer: answer
             })
         });
 
         if (!response.ok) {
-            throw new Error(`HTTP错误: ${response.status}`);
+            const detail = await this._readErrorDetail(response, `HTTP错误: ${response.status}`);
+            throw new Error(detail);
         }
 
         const data = await response.json();
-        if (data.code !== 200 || !data.data || !data.data.content) {
-            const errMsg = (data.data && data.data.errorMessage) || data.message || '生成草稿失败';
+        const changes = data.data && data.data.changes;
+        if (data.code !== 200 || !changes || !changes.length) {
+            const errMsg = (data.data && data.data.errorMessage) || data.message || '生成提案失败';
             throw new Error(errMsg);
         }
-
         return {
-            title: data.data.title || '',
-            content: data.data.content || ''
+            sourceType: sourceType,
+            question: question || '',
+            answer: answer,
+            changes: changes
         };
     }
 
-    // 打开沉淀弹窗并请求 LLM 草稿（同问答复用缓存 / 在途请求）
-    async openKnowledgeDraft(question, answer, triggerBtn) {
+    // 打开提案弹窗。同一份材料复用缓存和在途请求。
+    async openWikiProposal(question, answer, sourceType, triggerBtn) {
         if (!this.knowledgeModal) {
             return;
         }
-
+        const kind = sourceType || 'qa';
         this._precipitateTriggerBtn = triggerBtn || null;
-        const key = this._knowledgeDraftCacheKey(question, answer);
-        this._knowledgeDraftKey = key;
+        this._precipitateSourceType = kind;
+        const key = this._wikiProposalCacheKey(kind, question, answer);
+        this._wikiProposalKey = key;
         this.knowledgeModal.style.display = 'flex';
 
-        // 已有缓存：直接回填，不重复请求
-        const cached = this._knowledgeDraftCache.get(key);
+        const cached = this._wikiProposalCache.get(key);
         if (cached) {
-            this._fillKnowledgeDraftForm(cached.title, cached.content, false);
+            this._activeProposal = cached;
+            this._renderWikiProposal(cached.changes, false);
             return;
         }
 
-        this._fillKnowledgeDraftForm('', '正在生成知识点草稿，请稍候...', true);
+        this._activeProposal = null;
+        this._renderWikiProposal([], true);
 
-        // 复用在途请求，避免重复打接口
-        let pending = this._knowledgeDraftPending.get(key);
+        let pending = this._wikiProposalPending.get(key);
         if (!pending) {
-            pending = this._requestKnowledgeDraft(question, answer)
-                .then((draft) => {
-                    this._knowledgeDraftCache.set(key, draft);
-                    return draft;
+            pending = this._requestWikiProposal(question, answer, kind)
+                .then((proposal) => {
+                    this._wikiProposalCache.set(key, proposal);
+                    return proposal;
                 })
                 .finally(() => {
-                    this._knowledgeDraftPending.delete(key);
+                    this._wikiProposalPending.delete(key);
                 });
-            this._knowledgeDraftPending.set(key, pending);
+            this._wikiProposalPending.set(key, pending);
         }
 
         try {
-            const draft = await pending;
-            // 仅当仍在查看同一条问答时回填（弹窗关闭后也已写入缓存）
-            if (this._knowledgeDraftKey === key) {
-                this._fillKnowledgeDraftForm(draft.title, draft.content, false);
+            const proposal = await pending;
+            if (this._wikiProposalKey === key) {
+                this._activeProposal = proposal;
+                this._renderWikiProposal(proposal.changes, false);
             }
         } catch (error) {
-            console.error('生成知识点草稿失败:', error);
-            if (this._knowledgeDraftKey === key) {
-                this._knowledgeDraftLoading = false;
-                this.showNotification('生成草稿失败：' + error.message, 'error');
+            console.error('生成 Wiki 提案失败:', error);
+            if (this._wikiProposalKey === key) {
+                this._wikiProposalLoading = false;
+                this.showNotification('生成提案失败：' + error.message, 'error');
                 this.closeKnowledgeModal();
             }
         }
     }
 
     closeKnowledgeModal() {
-        // 关闭前保留已编辑内容，再次打开可回填
-        if (
-            this._knowledgeDraftKey &&
-            this.knowledgeTitleInput &&
-            !this.knowledgeTitleInput.disabled
-        ) {
-            this._knowledgeDraftCache.set(this._knowledgeDraftKey, {
-                title: this.knowledgeTitleInput.value,
-                content: this.knowledgeContentInput ? this.knowledgeContentInput.value : ''
-            });
+        this._syncActiveProposalFromDom();
+        if (this._wikiProposalKey && this._activeProposal && !this._wikiProposalLoading) {
+            this._wikiProposalCache.set(this._wikiProposalKey, this._activeProposal);
         }
 
         if (this.knowledgeModal) {
@@ -1551,57 +1649,80 @@ class IntelliOpsAgentApp {
         if (this.knowledgeConfirmBtn) {
             this.knowledgeConfirmBtn.disabled = false;
         }
-        if (this.knowledgeTitleInput) {
-            this.knowledgeTitleInput.disabled = false;
-        }
-        if (this.knowledgeContentInput) {
-            this.knowledgeContentInput.disabled = false;
-        }
-        // 生成中关闭弹窗不取消请求；再次打开会走缓存/在途复用
-        this._knowledgeDraftLoading = false;
+        this._wikiProposalLoading = false;
     }
 
-    // 确认入库
-    async confirmKnowledgePrecipitate() {
-        const title = this.knowledgeTitleInput ? this.knowledgeTitleInput.value.trim() : '';
-        const content = this.knowledgeContentInput ? this.knowledgeContentInput.value.trim() : '';
+    _collectWikiChanges() {
+        if (!this.wikiChangeList) {
+            return [];
+        }
+        const cards = this.wikiChangeList.querySelectorAll('.wiki-change-card');
+        return Array.from(cards).map((card) => {
+            const area = card.querySelector('textarea');
+            return {
+                path: card.dataset.path,
+                action: card.dataset.action === 'create' ? 'create' : 'update',
+                content: area ? area.value.trim() : '',
+                base_hash: card.dataset.baseHash || ''
+            };
+        });
+    }
 
-        if (!title || !content) {
-            this.showNotification('请填写标题和内容', 'warning');
+    // 确认写入 Wiki
+    async confirmWikiProposal() {
+        const changes = this._collectWikiChanges();
+        if (!changes.length || changes.some((item) => !item.content || !item.path || !item.base_hash)) {
+            this.showNotification('请确认每个页面都有内容', 'warning');
             return;
         }
 
         if (this.knowledgeConfirmBtn) {
             this.knowledgeConfirmBtn.disabled = true;
-            this.knowledgeConfirmBtn.textContent = '入库中...';
+            this.knowledgeConfirmBtn.textContent = '写入中...';
         }
 
         try {
-            const response = await fetch(`${this.apiBaseUrl}/knowledge/confirm`, {
+            const response = await fetch(`${this.apiBaseUrl}/wiki/confirm`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    title: title,
-                    content: content,
+                    changes: changes,
+                    source_type: this._precipitateSourceType || 'qa',
                     session_id: this.sessionId
                 })
             });
 
+            if (response.status === 409) {
+                if (this._wikiProposalKey) {
+                    this._wikiProposalCache.delete(this._wikiProposalKey);
+                    this._wikiProposalKey = null;
+                }
+                this._activeProposal = null;
+                this.closeKnowledgeModal();
+                throw new Error('页面已被修改，请重新生成');
+            }
+
             if (!response.ok) {
-                throw new Error(`HTTP错误: ${response.status}`);
+                const detail = await this._readErrorDetail(response, `HTTP错误: ${response.status}`);
+                throw new Error(detail);
             }
 
             const data = await response.json();
             if (data.code !== 200 || !data.data || !data.data.success) {
-                const errMsg = (data.data && data.data.errorMessage) || data.message || '入库失败';
+                const errMsg = (data.data && data.data.errorMessage) || data.message || '写入失败';
                 throw new Error(errMsg);
             }
 
-            const chunkCount = data.data.chunk_count || 0;
-            this.showNotification(
-                `知识点已入库（${data.data.filename}，${chunkCount} 个分片）`,
-                'success'
-            );
+            const pages = data.data.pages || [];
+            const failed = pages.filter((page) => page.index_error);
+            if (failed.length) {
+                this.showNotification(
+                    `Wiki 已写入，但有 ${failed.length} 页未能写入向量库`,
+                    'warning'
+                );
+            } else {
+                this.showNotification(`已写入 Wiki（${pages.length} 页）`, 'success');
+            }
 
             if (this._precipitateTriggerBtn) {
                 this._precipitateTriggerBtn.disabled = true;
@@ -1609,21 +1730,21 @@ class IntelliOpsAgentApp {
                 this._precipitateTriggerBtn.textContent = '已沉淀';
             }
 
-            if (this._knowledgeDraftKey) {
-                this._knowledgeDraftCache.delete(this._knowledgeDraftKey);
-                this._knowledgeDraftKey = null;
+            if (this._wikiProposalKey) {
+                this._wikiProposalCache.delete(this._wikiProposalKey);
+                this._wikiProposalKey = null;
             }
-
+            this._activeProposal = null;
             this.closeKnowledgeModal();
         } catch (error) {
-            console.error('知识点入库失败:', error);
-            this.showNotification('入库失败：' + error.message, 'error');
+            console.error('Wiki 写入失败:', error);
+            this.showNotification(error.message || '写入失败', 'error');
             if (this.knowledgeConfirmBtn) {
                 this.knowledgeConfirmBtn.disabled = false;
             }
         } finally {
             if (this.knowledgeConfirmBtn) {
-                this.knowledgeConfirmBtn.textContent = '确认入库';
+                this.knowledgeConfirmBtn.textContent = '确认写入';
             }
         }
     }
@@ -1907,7 +2028,7 @@ class IntelliOpsAgentApp {
                         // 流结束，更新最终内容
                         if (fullResponse) {
                             console.log('AI Ops 流结束，更新最终内容，长度:', fullResponse.length);
-                            this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
+                            this._finishAIOpsMessage(loadingMessageElement, fullResponse, '');
                         }
                         break;
                     }
@@ -1974,11 +2095,15 @@ class IntelliOpsAgentApp {
                                                 if (finalReport && !fullResponse.includes(finalReport)) {
                                                     fullResponse += `\n\n${finalReport}`;
                                                 }
-                                                this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
+                                                this._finishAIOpsMessage(
+                                                    loadingMessageElement,
+                                                    fullResponse,
+                                                    finalReport
+                                                );
                                                 return true;
                                             } else if (sseMessage.type === 'done') {
                                                 console.log('AI Ops 流完成，最终内容长度:', fullResponse.length);
-                                                this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
+                                                this._finishAIOpsMessage(loadingMessageElement, fullResponse, '');
                                                 return true;
                                             } else if (sseMessage.type === 'error') {
                                                 throw new Error(sseMessage.data || sseMessage.message || '智能运维分析失败');
@@ -2046,11 +2171,15 @@ class IntelliOpsAgentApp {
                                             if (finalReport && !fullResponse.includes(finalReport)) {
                                                 fullResponse += `\n\n${finalReport}`;
                                             }
-                                            this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
+                                            this._finishAIOpsMessage(
+                                                loadingMessageElement,
+                                                fullResponse,
+                                                finalReport
+                                            );
                                             return;
                                         } else if (sseMessage.type === 'done') {
                                             console.log('AI Ops 流完成，最终内容长度:', fullResponse.length);
-                                            this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
+                                            this._finishAIOpsMessage(loadingMessageElement, fullResponse, '');
                                             return;
                                         } else if (sseMessage.type === 'error') {
                                             throw new Error(sseMessage.data || sseMessage.message || '智能运维分析失败');
@@ -2102,7 +2231,30 @@ class IntelliOpsAgentApp {
         }
     }
 
+    _extractAIOpsReport(fullResponse, reportText) {
+        const explicit = (reportText || '').trim();
+        if (explicit) {
+            return explicit;
+        }
+        const text = fullResponse || '';
+        const marker = '## 诊断报告';
+        const idx = text.lastIndexOf(marker);
+        if (idx >= 0) {
+            return text.slice(idx + marker.length).trim();
+        }
+        return '';
+    }
+
     // 更新智能运维消息（带折叠详情）
+    _finishAIOpsMessage(messageElement, fullResponse, reportText) {
+        this.updateAIOpsMessage(messageElement, fullResponse, []);
+        const report = this._extractAIOpsReport(fullResponse, reportText);
+        if (!report) {
+            return;
+        }
+        this.attachPrecipitateButton(messageElement, 'AIOps 诊断报告', report, 'incident');
+    }
+
     updateAIOpsMessage(messageElement, response, details) {
         console.log('updateAIOpsMessage 被调用');
         console.log('messageElement:', messageElement);

@@ -154,20 +154,20 @@ class VectorIndexService:
             content = path.read_text(encoding="utf-8")
             logger.info(f"读取文件: {path}, 内容长度: {len(content)} 字符")
 
-            # 2. 删除该文件的旧数据（如果存在）
+            # 2. 先记下旧分片。新分片写入成功后再按主键删除，避免写入失败时旧数据已被清掉
             normalized_path = path.as_posix()
-            vector_store_manager.delete_by_source(normalized_path)
-
-            # 3. 使用新的文档分割器
             documents = document_splitter_service.split_document(content, normalized_path)
             logger.info(f"文档分割完成: {file_path} -> {len(documents)} 个分片")
 
-            # 4. 添加文档到向量存储
             if documents:
+                old_ids = vector_store_manager.list_ids_by_source(normalized_path)
                 vector_store_manager.add_documents(documents)
+                if old_ids:
+                    vector_store_manager.delete_by_ids(old_ids)
                 logger.info(f"文件索引完成: {file_path}, 共 {len(documents)} 个分片")
             else:
                 logger.warning(f"文件内容为空或无法分割: {file_path}")
+                vector_store_manager.delete_by_source(normalized_path)
 
             return len(documents)
 
